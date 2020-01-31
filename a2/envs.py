@@ -236,13 +236,8 @@ class FallingLinkEnv(BaseEnv):
 
         grav = np.array([0, self.GRAVITY, 0])  # gravity vector
 
-        # pre-allocate matrix of the required size
-        # TODO:  choose dimensions as needed 
-
         n_links = len(self.links)
         dim = 6 * n_links
-        A = np.eye((dim))  # main matrix
-        b = np.zeros(dim)  # right-hand-side
 
         psteps = 1  # number of physics time steps to take for each display time step
         for step in range(psteps):  # simulate physics time steps, before doing a draw update
@@ -271,6 +266,19 @@ class FallingLinkEnv(BaseEnv):
             #        You'll need to build A and b.
             #        Most quantities are already in the world frame, except for the inertia tensor
 
+            assert n_links == 1, "FallingLink assumes one link"
+            link = self.links[0]
+
+            # No angular momentum, so just use Ma = F, i.e. A = diagonal M, F = gravity
+            A = np.eye((dim))
+            midDim = 3 * n_links
+            A[:midDim, :midDim] = np.eye((midDim)) * link.mass
+            A[midDim:, midDim:] = link.inertia
+
+            b = np.zeros(dim)  # right-hand-side
+            b[:midDim] = grav
+            b[midDim:] = link.omega
+
             # solve for accelerations and constraint forces
             results = np.linalg.solve(A, b)
 
@@ -279,7 +287,8 @@ class FallingLinkEnv(BaseEnv):
 
             link_accs = results.reshape(n_links, 6)
             for link, link_acc in zip(self.links, link_accs):
-                pass
+                link.pos += link.vel * self.dT
+                link.vel += link_acc[:midDim] * self.dT
 
             self.sim_time += self.dT
 
