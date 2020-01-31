@@ -1,0 +1,3 @@
+pyquaternion
+PyOpenGL
+PyOpenGL_accelerate
