@@ -17,7 +17,11 @@ def funkify(v):
     """Returns a skew-symmetric matrix M for input vector v such that cross(v, k) = M @ k"""
     return np.array([[0, -v[2], v[1]], [v[2], 0, -v[0]], [-v[1], v[0], 0]])
 
-def accelFromForces(link, sumF_world, sumTExt_world):
+# Solve:
+# [ F ] = [ mI  0  ] [ linAcc ] + [       0      ]
+# [ t ]   [  0 I_w ] [ angAcc ]   [ w x (I_w * w)]
+
+def _linkAccelFromForces(link, sumF_world, sumTExt_world):
     nDim = 3
 
     w = link.omega
@@ -37,7 +41,6 @@ def accelFromForces(link, sumF_world, sumTExt_world):
 
     # solve for accelerations and constraint forces
     results = np.linalg.solve(A, b)
-    # link_deltas = results.reshape(1, 6)
     return results[:nDim], results[nDim:]
 
 
@@ -299,39 +302,12 @@ class FallingLinkEnv(BaseEnv):
             # TODO:  Equations of motion solve the linear equations   A x = b
             #        You'll need to build A and b.
             #        Most quantities are already in the world frame, except for the inertia tensor
-
+            """;
             assert n_links == 1, "FallingLink assumes one link"
             link = self.links[0]
 
-            # No angular momentum, so just use Ma = F, i.e. A = diagonal M, F = gravity
-            A = np.eye((dim))
-            midDim = 3 * n_links
-            A[:midDim, :midDim] = np.eye((midDim)) * link.mass
-            A[midDim:, midDim:] = link.inertia
-
-            b = np.zeros(dim)  # right-hand-side
-            b[:midDim] = g_world
-            # b[midDim:] = link.omega
-
-            # solve for accelerations and constraint forces
-            results = np.linalg.solve(A, b)
-            link_deltas = results.reshape(1, 6)
-
-            # TODO:  integrate the equations of motion, using explicit Euler integration
-            #        i.e., update:  link.pos,  link.vel,  link.q_rot,  link.omega
-
-            for link, link_delta in zip(self.links, link_deltas):
-                link_acc = link_delta[:midDim]
-                link.pos += link.vel * self.dT
-                link.vel += link_acc * self.dT
-
-            self.sim_time += self.dT
-            """;
-            link = self.links[0]
-            #R_world = link.q_rot.rotation_matrix @ R_local
             T_world = np.zeros(3)
-
-            linAcc, angAcc = accelFromForces(link, g_world, T_world)
+            linAcc, angAcc = _linkAccelFromForces(link, g_world, T_world)
 
             #link_delta[:midDim], link_delta[midDim:]
             link.pos += link.vel * self.dT
@@ -374,7 +350,7 @@ class SpinningLinkEnv(BaseEnv):
             R_world = link.q_rot.rotation_matrix @ R_local
             T_world = np.cross(R_world, F_world)
 
-            linAcc, angAcc = accelFromForces(link, g_world, T_world)
+            linAcc, angAcc = _linkAccelFromForces(link, g_world, T_world)
 
             #link_delta[:midDim], link_delta[midDim:]
             link.pos += link.vel * self.dT
@@ -394,7 +370,8 @@ class SingleLinkPendulumEnv(BaseEnv):
         self.reset_sim(1)  # reset with a given number of links
 
         # HACK
-        self.lastFC = np.zeros(3)
+        firstLink = self.links[0]
+        self.targetPoint = firstLink.pos + firstLink.get_r()
 
     def step(self):
         if not self.sim_running:
@@ -417,18 +394,12 @@ class SingleLinkPendulumEnv(BaseEnv):
 
             w = link.omega
             I_world = link.q_rot.rotation_matrix @ link.inertia @ np.linalg.pinv(link.q_rot.rotation_matrix)
-            r_local = link.get_r()
-            r_world = link.q_rot.rotation_matrix @ r_local
-            r = r_world
+            r_world = link.get_r()
 
             # Compute forces & torques in world frame
             sumF_world = g_world
-
-            #R_world = link.q_rot.rotation_matrix @ R_world
-            #T_world = np.cross(R_world, F_world)
             coriolis_world = np.cross(w, I_world @ w)
-            T_world = np.zeros(midDim)
-            sumT_world = T_world - coriolis_world
+            sumT_world = -coriolis_world
 
             # Construct A using both mass and inertia:
             A = np.zeros((dim, dim))
@@ -436,34 +407,43 @@ class SingleLinkPendulumEnv(BaseEnv):
             A[midDim:2*midDim, midDim:2*midDim] = I_world
             A[2*midDim:, :midDim] = -np.eye((midDim))
             A[:midDim, 2*midDim:] = -np.eye((midDim))
-            r_hat = funkify(r)
-            A[2*midDim:, midDim:2*midDim] = -r_hat
-            A[midDim:2*midDim, 2*midDim:] = -r_hat
+            r_world_hat = funkify(r_world)
+            A[2*midDim:, midDim:2*midDim] = -r_world_hat
+            A[midDim:2*midDim, 2*midDim:] = r_world_hat
 
             # Same with b, using concatenating linear and angular accelerations
             b = np.zeros(dim)
             b[:midDim] = sumF_world
             b[midDim:2*midDim] = sumT_world
-            b[2*midDim:] = np.cross(np.cross(w, w), r)
+            b[2*midDim:] = np.cross(w, np.cross(w, r_world))
 
-            # solve for accelerations and constraint forces
+            # solve for constraint forces
             results = np.linalg.solve(A, b)
             link_deltas = results.reshape(1, 9)
+            Fconstraint_world = results[2*midDim:]
 
+            # Baumgarte stabilization:
+            k_p, k_d = 0.5, 0.005
+            pErr = (link.pos + link.get_r()) - self.targetPoint
+            baumF_world = -k_p * pErr - k_d * (link.vel)
+            print (pErr)
+            # print (baumF_world)
 
-            # MEGA HACK
-            #link = self.links[0]
-            #T_world = np.cross(R_world, F_world)
+            Fconstraint_world += baumF_world
 
-            F_world = results[2*midDim:]
-            R_world = link.q_rot.rotation_matrix @ r_local
-            T_world = np.cross(R_world, F_world)
-            linAcc, angAcc = accelFromForces(link, g_world, T_world)
+            # Apply constraint force at constraint position
+            T_world = np.cross(link.get_r(), Fconstraint_world)
+            w_damp = 0
+            T_world += -w_damp * link.omega
+
+            # Add gravity (applied at CoM, so no torque)
+            F_world = Fconstraint_world + g_world
+            linAcc, angAcc = _linkAccelFromForces(link, F_world, T_world)
 
             #link_delta[:midDim], link_delta[midDim:]
             link.pos += link.vel * self.dT
             link.vel +=   linAcc * self.dT
-            qDot = 0.5 * Quaternion(vector=link.omega) * link.q_rot
+            qDot = 0.5 * (Quaternion(vector=link.omega) * link.q_rot)
             link.q_rot +=   qDot * self.dT
             link.omega += angAcc * self.dT
 
