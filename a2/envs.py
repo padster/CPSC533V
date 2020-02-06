@@ -10,24 +10,23 @@ from pyquaternion import Quaternion
 from link import Link
 
 # For easier debugging:
-np.set_printoptions(precision=5, suppress=True)
+np.set_printoptions(precision=4, suppress=True, linewidth=np.inf)
 
 def funkify(v):
     #  triple quotes allow comments to span multiple lines in python
     """Returns a skew-symmetric matrix M for input vector v such that cross(v, k) = M @ k"""
     return np.array([[0, -v[2], v[1]], [v[2], 0, -v[0]], [-v[1], v[0], 0]])
 
-# Solve:
+# Solve for linear and angular acc, using:
 # [ F ] = [ mI  0  ] [ linAcc ] + [       0      ]
 # [ t ]   [  0 I_w ] [ angAcc ]   [ w x (I_w * w)]
-
-def _linkAccelFromForces(link, sumF_world, sumTExt_world):
+#   and integrate to update pos/vel/q_rot/omega with delta_t
+def _updateLinkFromForces(link, sumF_world, sumT_world, delta_t, _hackIdx):
     nDim = 3
 
-    w = link.omega
     I_world = link.q_rot.rotation_matrix @ link.inertia @ np.linalg.pinv(link.q_rot.rotation_matrix)
-    coriolis_world = np.cross(w, I_world @ w)
-    sumT_world = sumTExt_world - coriolis_world
+    coriolis_world = np.cross(link.omega, I_world @ link.omega)
+    sumT_world -= coriolis_world
 
     # Construct A using both mass and inertia:
     A = np.zeros((2*nDim, 2*nDim))
@@ -39,9 +38,71 @@ def _linkAccelFromForces(link, sumF_world, sumTExt_world):
     b[:nDim] = sumF_world
     b[nDim:] = sumT_world
 
-    # solve for accelerations and constraint forces
+    # Solve for accelerations and constraint forces
     results = np.linalg.solve(A, b)
-    return results[:nDim], results[nDim:]
+    linearAcc, angularAcc = results[:nDim], results[nDim:]
+
+    # Derivative of the rotation quaternion:
+    dQdT = (0.5 * Quaternion(vector=link.omega) * link.q_rot)
+
+    # update based on accelerations
+    # p = link.pos + (-link.get_r() if _hackIdx == 0 else link.get_r())
+    # print ("Link %d:" % _hackIdx)
+    # print ("  * x = %s" % str(p))
+    # print ("  * v = %s" % str(link.vel))
+    # print ("  * a = %s" % str(linearAcc))
+
+    link.pos   += delta_t * link.vel
+    link.vel   += delta_t * linearAcc
+    link.q_rot += delta_t * dQdT
+    link.omega += delta_t * angularAcc
+
+    # p = link.pos + (-link.get_r() if _hackIdx == 0 else link.get_r())
+    # print (" --->")
+    # print ("  * x = %s" % str(p))
+    # print ("  * v = %s" % str(link.vel))
+    # print ("")
+
+def _calculateConstraintForces(links, F_grav):
+    nDim, nLinks = 3, len(links)
+    szC = 2 * nDim * nLinks
+    sz = szC + nDim * nLinks
+    A, b = np.zeros((sz, sz)), np.zeros((sz))
+    I3 = np.eye((3))
+
+    for i, link in enumerate(links):
+        r_world = link.get_r()
+        r_hat = funkify(r_world)
+        I_world = link.q_rot.rotation_matrix @ link.inertia @ np.linalg.pinv(link.q_rot.rotation_matrix)
+        coriolis = np.cross(link.omega, I_world @ link.omega)
+
+        p, q = 6*i, szC+3*i
+        A[p+0:p+3, p+0:p+3] = I3 * link.mass
+        A[p+3:p+6, p+3:p+6] = I_world
+        A[q+0:q+3, p+0:p+3] = I3
+        A[q+0:q+3, p+3:p+6] = -r_hat
+        A[p+0:p+3, q+0:q+3] = I3
+        A[p+3:p+6, q+0:q+3] = r_hat
+        if i > 0:
+            lastLink = links[i - 1]
+            last_r_hat = funkify(-lastLink.get_r())
+            A[q+0:q+3, p-6:p-3] = -I3
+            A[q+0:q+3, p-3:p-0] = last_r_hat
+            A[p-6:p-3, q+0:q+3] = -I3
+            A[p-3:p-0, q+0:q+3] = -last_r_hat
+
+        b[p+0:p+3] = F_grav * link.mass
+        b[p+3:p+6] = -coriolis
+        constraint = -np.cross(link.omega, np.cross(link.omega, link.get_r()))
+        if i > 0:
+            lastLink = links[i - 1]
+            constraint += np.cross(lastLink.omega, np.cross(lastLink.omega, -lastLink.get_r()))
+        b[q+0:q+3] = constraint
+
+    result = np.linalg.solve(A, b)
+    forces = -np.expand_dims(result[szC:], axis=1)
+    return list(forces.reshape((-1, nDim))), A, b
+
 
 
 ########################################################################################################################
@@ -267,13 +328,8 @@ class FallingLinkEnv(BaseEnv):
         if not self.sim_running:  # is simulation stopped?
             return
         if self.sim_time == 0:
-            link = self.links[0]
-            link.vel = np.array([0.1, 2.0, 0.0])  # initial velocity
-
-        g_world = np.array([0, self.GRAVITY, 0])  # gravity vector
-
-        n_links = len(self.links)
-        dim = 6 * n_links
+            for link in self.links:
+                link.vel = np.array([0.1, 2.0, 0.0])  # initial velocity
 
         psteps = 1  # number of physics time steps to take for each display time step
         for step in range(psteps):  # simulate physics time steps, before doing a draw update
@@ -303,18 +359,12 @@ class FallingLinkEnv(BaseEnv):
             #        You'll need to build A and b.
             #        Most quantities are already in the world frame, except for the inertia tensor
             """;
-            assert n_links == 1, "FallingLink assumes one link"
-            link = self.links[0]
-
+            # Only force is gravity, with no torque:
+            F_world = np.array([0, self.GRAVITY, 0])
             T_world = np.zeros(3)
-            linAcc, angAcc = _linkAccelFromForces(link, g_world, T_world)
 
-            #link_delta[:midDim], link_delta[midDim:]
-            link.pos += link.vel * self.dT
-            link.vel +=   linAcc * self.dT
-            qDot = 0.5 * Quaternion(vector=link.omega) * link.q_rot
-            link.q_rot +=   qDot * self.dT
-            link.omega += angAcc * self.dT
+            for link in self.links:
+                _updateLinkFromForces(link, F_world, T_world, self.dT)
 
             self.sim_time += self.dT
 
@@ -331,33 +381,17 @@ class SpinningLinkEnv(BaseEnv):
             return
 
         if self.sim_time == 0:
-            link = self.links[0]
-            link.vel = np.zeros(3)  # initial velocity
+            for link in self.links:
+                link.vel = np.zeros(3)  # initial velocity
 
         g_world = np.array([0, self.GRAVITY, 0])
         F_world = np.array([0, 5, 0])
-        R_local = np.array([0, 0.25, 0])
-
-        n_links = len(self.links)
-        dim = 6 * n_links
-        midDim = 3 * n_links
-        assert n_links == 1, "SpinningLink assumes one link"
 
         psteps = 1
         for step in range(psteps):
-            #sumF_world = g_world
-            link = self.links[0]
-            R_world = link.q_rot.rotation_matrix @ R_local
-            T_world = np.cross(R_world, F_world)
-
-            linAcc, angAcc = _linkAccelFromForces(link, g_world, T_world)
-
-            #link_delta[:midDim], link_delta[midDim:]
-            link.pos += link.vel * self.dT
-            link.vel +=   linAcc * self.dT
-            qDot = 0.5 * Quaternion(vector=link.omega) * link.q_rot
-            link.q_rot +=   qDot * self.dT
-            link.omega += angAcc * self.dT
+            for link in self.links:
+                T_world = np.cross(link.get_r(), F_world)
+                _updateLinkFromForces(link, g_world, T_world, self.dT)
 
             self.sim_time += self.dT
 
@@ -369,9 +403,9 @@ class SingleLinkPendulumEnv(BaseEnv):
     def reset(self):
         self.reset_sim(1)  # reset with a given number of links
 
-        # HACK
+        # Store pivot point, for stabilization:
         firstLink = self.links[0]
-        self.targetPoint = firstLink.pos + firstLink.get_r()
+        self.initialAnchor = firstLink.pos + firstLink.get_r()
 
     def step(self):
         if not self.sim_running:
@@ -381,100 +415,36 @@ class SingleLinkPendulumEnv(BaseEnv):
             link = self.links[0]
             link.vel = np.zeros(3)  # initial velocity
 
-        g_world = np.array([0, self.GRAVITY, 0])
-
-        n_links = len(self.links)
-        dim = 9 * n_links
-        midDim = 3 * n_links
-        assert n_links == 1, "SingleLinkPendulum assumes one link"
+        F_grav = np.array([0, self.GRAVITY, 0])
+        assert len(self.links) == 1, "SingleLinkPendulum assumes one link"
 
         psteps = 1
         for step in range(psteps):
             link = self.links[0]
-
-            w = link.omega
-            I_world = link.q_rot.rotation_matrix @ link.inertia @ np.linalg.pinv(link.q_rot.rotation_matrix)
-            r_world = link.get_r()
-
-            # Compute forces & torques in world frame
-            sumF_world = g_world
-            coriolis_world = np.cross(w, I_world @ w)
-            sumT_world = -coriolis_world
-
-            # Construct A using both mass and inertia:
-            A = np.zeros((dim, dim))
-            A[:midDim, :midDim] = np.eye((midDim)) * link.mass
-            A[midDim:2*midDim, midDim:2*midDim] = I_world
-            A[2*midDim:, :midDim] = -np.eye((midDim))
-            A[:midDim, 2*midDim:] = -np.eye((midDim))
-            r_world_hat = funkify(r_world)
-            A[2*midDim:, midDim:2*midDim] = -r_world_hat
-            A[midDim:2*midDim, 2*midDim:] = r_world_hat
-
-            # Same with b, using concatenating linear and angular accelerations
-            b = np.zeros(dim)
-            b[:midDim] = sumF_world
-            b[midDim:2*midDim] = sumT_world
-            b[2*midDim:] = np.cross(w, np.cross(w, r_world))
-
-            # solve for constraint forces
-            results = np.linalg.solve(A, b)
-            link_deltas = results.reshape(1, 9)
-            Fconstraint_world = results[2*midDim:]
+            _Fs, _A, _b = _calculateConstraintForces([link], F_grav)
+            Fconstraint_world = _Fs[0]
 
             # Baumgarte stabilization:
             k_p, k_d = 0.5, 0.005
-            pErr = (link.pos + link.get_r()) - self.targetPoint
+            pErr = (link.pos + link.get_r()) - self.initialAnchor
             baumF_world = -k_p * pErr - k_d * (link.vel)
-            print (pErr)
-            # print (baumF_world)
-
             Fconstraint_world += baumF_world
 
-            # Apply constraint force at constraint position
+            # Apply constraint force at constraint position, and damp
             T_world = np.cross(link.get_r(), Fconstraint_world)
-            w_damp = 0
+            w_damp = 0.0001
             T_world += -w_damp * link.omega
 
             # Add gravity (applied at CoM, so no torque)
-            F_world = Fconstraint_world + g_world
-            linAcc, angAcc = _linkAccelFromForces(link, F_world, T_world)
+            F_world = Fconstraint_world + F_grav
 
-            #link_delta[:midDim], link_delta[midDim:]
-            link.pos += link.vel * self.dT
-            link.vel +=   linAcc * self.dT
-            qDot = 0.5 * (Quaternion(vector=link.omega) * link.q_rot)
-            link.q_rot +=   qDot * self.dT
-            link.omega += angAcc * self.dT
+            _updateLinkFromForces(link, F_world, T_world, self.dT)
 
             self.sim_time += self.dT
 
-            """
-            # solve for accelerations and constraint forces
-            results = np.linalg.solve(A, b)
-            link_deltas = results.reshape(1, 6)
+            # if (self.sim_time >= self.dT * 5):
+                # raise Exception("")
 
-            for link, link_delta in zip(self.links, link_deltas):
-                linAcc, angAcc = link_delta[:midDim], link_delta[midDim:]
-                link.pos += link.vel * self.dT
-                link.vel +=   linAcc * self.dT
-                qDot = 0.5 * Quaternion(vector=link.omega) * link.q_rot
-                link.q_rot +=   qDot * self.dT
-                link.omega += angAcc * self.dT
-
-
-
-            for link, link_delta in zip(self.links, link_deltas):
-                linAcc, angAcc, F_c = link_delta[:midDim], link_delta[midDim:2*midDim], link_delta[2*midDim:]
-                link.pos += link.vel * self.dT
-                link.vel +=   linAcc * self.dT
-                qDot = 0.5 * Quaternion(vector=link.omega) * link.q_rot
-                link.q_rot +=   qDot * self.dT
-                link.omega += angAcc * self.dT
-                self.lastFC = F_c
-                print (F_c)
-            self.sim_time += self.dT
-            """;
 
 ########################################################################################################################
 
@@ -483,5 +453,56 @@ class MultiLinkPendulumEnv(BaseEnv):
     def reset(self):
         self.reset_sim(2)  # reset with a given number of links
 
+        # Store pivot point, for stabilization:
+        firstLink = self.links[0]
+        self.initialAnchor = firstLink.pos + firstLink.get_r()
+
     def step(self):
-        pass
+        if not self.sim_running:
+            return
+
+        if self.sim_time == 0:
+            for link in self.links:
+                link.vel = np.zeros(3)  # initial velocity
+
+        F_grav = np.array([0, self.GRAVITY * 0.2, 0])
+        nLinks = len(self.links)
+
+        psteps = 1
+        for step in range(psteps):
+            _Fs, _A, _b = _calculateConstraintForces(self.links, F_grav)
+
+            for i in range(nLinks):
+                link = self.links[i]
+
+                Fconstraint_world = _Fs[i]
+                if i < nLinks - 1:
+                    Fconstraint_world -= _Fs[i+1]
+
+                # Baumgarte stabilization:
+                k_p, k_d = 1.0, 0.0001
+                if i == 0:
+                    pErr = (link.pos + link.get_r()) - self.initialAnchor
+                    # print ("%d > %f" % (i, np.linalg.norm(pErr)))
+                else:
+                    prevLink = self.links[i - 1]
+                    pErr = (link.pos + link.get_r()) - (prevLink.pos - prevLink.get_r())
+                    # print ("%d > %f" % (i, np.linalg.norm(pErr)))
+                    print ("ERR > %s" % (str(pErr)))
+                baumF_world = -k_p * pErr - k_d * (link.vel)
+                Fconstraint_world += baumF_world
+
+                # Apply constraint force at constraint position, and damp
+                T_world = np.cross(link.get_r(), Fconstraint_world)
+                w_damp = 0 #0.00001
+                T_world += -w_damp * link.omega
+
+                # Add gravity (applied at CoM, so no torque)
+                F_world = Fconstraint_world + F_grav
+                #print ("%d > %s" % (i, str(F_world)))
+
+                _updateLinkFromForces(link, F_world, T_world, self.dT, i)
+
+            self.sim_time += self.dT
+            # if (self.sim_time >= self.dT * 25):
+                # raise Exception("")
