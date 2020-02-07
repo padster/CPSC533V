@@ -19,7 +19,6 @@ def funkify(v):
 
 # Baumgarte force, based off relative velocities and positions
 def baum(mass, dV, dP, k_d, k_p):
-    """  """
     return (0 - k_d * dV - k_p * dP) * mass
 
 # Solve for linear and angular acc, using:
