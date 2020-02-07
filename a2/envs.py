@@ -17,8 +17,9 @@ def funkify(v):
     """Returns a skew-symmetric matrix M for input vector v such that cross(v, k) = M @ k"""
     return np.array([[0, -v[2], v[1]], [v[2], 0, -v[0]], [-v[1], v[0], 0]])
 
+# Baumgarte force, based off relative velocities and positions
 def baum(mass, dV, dP, k_d, k_p):
-    """ Baumgarte force, based off relative velocities and positions """
+    """  """
     return (0 - k_d * dV - k_p * dP) * mass
 
 # Solve for linear and angular acc, using:
@@ -50,7 +51,7 @@ def _updateLinkFromForceAndTorque(link, sumF_world, sumT_world, delta_t):
     dQdT = (0.5 * Quaternion(vector=link.omega) * link.q_rot)
 
     # Use for debugging:
-    link.display_force = 0.05 * sumF_world
+    # link.display_force = 0.05 * sumF_world
 
     # update based on accelerations
     link.pos   += delta_t * link.vel
@@ -129,7 +130,7 @@ class BaseEnv:
         self.cp = 4000.0  # ground penalty spring constant
         self.cd = 50.0  # ground penalty damping constant
         self.damp = 0.08  # angular velocity damping, to remove energy over time
-        self.plane = True  # toggle ground plane on-and-off
+        self.plane = False  # toggle ground plane on-and-off
         self.plane_height = 0.0
         self.links = []
 
@@ -290,6 +291,10 @@ class BaseEnv:
         try:
             self.step()
             self.render()
+            # Uncomment to only simulate a few steps:
+            # if (self.sim_time >= self.dT * 5):
+                # raise Exception("")
+
         except Exception as e:
             print (e)
             traceback.print_exc()
@@ -371,6 +376,7 @@ class SpinningLinkEnv(BaseEnv):
         for step in range(psteps):
             for link in self.links:
                 T_world = np.cross(link.get_r(), F_world)
+                # link.display_force = F_world * 0.05 # debug
                 _updateLinkFromForceAndTorque(link, g_world, T_world, self.dT)
 
             self.sim_time += self.dT
@@ -416,12 +422,13 @@ class SingleLinkPendulumEnv(BaseEnv):
             T_world = T_c + T_damp
             F_world = F_c + baumF_world + F_grav
 
+            # debugging:
+            link.display_force = 20 * baumF_world
+            # link.display_force = 0.01 * F_c
+
             _updateLinkFromForceAndTorque(link, F_world, T_world, self.dT)
 
             self.sim_time += self.dT
-            # Uncomment to only simulate a few steps:
-            # if (self.sim_time >= self.dT * 5):
-                # raise Exception("")
 
 
 ########################################################################################################################
@@ -472,24 +479,29 @@ class MultiLinkPendulumEnv(BaseEnv):
                 # Constraint forces, dV and dP for previous & next constraints:
                 prev_Fc.append(constraintForces[i])
                 next_Fc.append(-constraintForces[i+1] if (i < nLinks - 1) else z3)
-                prev_dV.append(z3 if pL is None else tL.vel - pL.vel)
+                prev_dV.append(tL.vel if pL is None else tL.vel - pL.vel)
                 next_dV.append(z3 if nL is None else tL.vel - nL.vel)
                 prev_dP.append(pEnd - tSta)
                 next_dP.append(z3 if nSta is None else tEnd - nSta)
 
             # Now apply forces and torque to each link in isolation:
+            baum_total = z3
             for i, link in enumerate(self.links):
-                k_d, k_p, k_t = 0.01, 0.05, 0.001
+                k_d, k_p, k_t = 0.00001, 0.00001, 0.001
 
                 # Stabilized force and torque from connection to previous link
                 prev_baumF = baum(link.mass, prev_dV[i], prev_dP[i], k_d, k_p)
-                pFc = prev_Fc[i] + prev_baumF
+                baum_total += prev_baumF
+                pFc = prev_Fc[i] - baum_total
                 pTc = np.cross(link.get_r(), prev_Fc[i])
 
-                # Stabilized force from connection to next link
-                next_baumF = baum(link.mass, next_dV[i], next_dP[i], k_d, k_p)
-                nFc = next_Fc[i] + next_baumF
+                # Force from connection to next link
+                nFc = next_Fc[i]
                 nTc = np.cross(-link.get_r(), next_Fc[i])
+
+                # debugging:
+                # link.display_force = 2000 * baum_total
+                # link.display_force = 0.01 * F_c
 
                 T_damp = -k_t * link.omega
                 T_world = pTc + nTc + T_damp
@@ -497,7 +509,3 @@ class MultiLinkPendulumEnv(BaseEnv):
                 _updateLinkFromForceAndTorque(link, F_world, T_world, self.dT)
 
             self.sim_time += self.dT
-
-            # Uncomment to only simulate a few steps:
-            # if (self.sim_time >= self.dT * 5):
-                # raise Exception("")
