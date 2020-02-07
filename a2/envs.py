@@ -17,6 +17,10 @@ def funkify(v):
     """Returns a skew-symmetric matrix M for input vector v such that cross(v, k) = M @ k"""
     return np.array([[0, -v[2], v[1]], [v[2], 0, -v[0]], [-v[1], v[0], 0]])
 
+def baum(mass, dV, dP, k_d, k_p):
+    """ Baumgarte force, based off relative velocities and positions """
+    return (0 - k_d * dV - k_p * dP) * mass
+
 # Solve for linear and angular acc, using:
 # [ F ] = [ mI  0  ] [ linAcc ] + [       0      ]
 # [ t ]   [  0 I_w ] [ angAcc ]   [ w x (I_w * w)]
@@ -46,29 +50,25 @@ def _updateLinkFromForces(link, sumF_world, sumT_world, delta_t, _hackIdx):
     dQdT = (0.5 * Quaternion(vector=link.omega) * link.q_rot)
 
     # update based on accelerations
-    # p = link.pos + (-link.get_r() if _hackIdx == 0 else link.get_r())
-    # print ("Link %d:" % _hackIdx)
-    # print ("  * x = %s" % str(p))
-    # print ("  * v = %s" % str(link.vel))
-    # print ("  * a = %s" % str(linearAcc))
-
     link.pos   += delta_t * link.vel
     link.vel   += delta_t * linearAcc
     link.q_rot += delta_t * dQdT
     link.omega += delta_t * angularAcc
 
-    # p = link.pos + (-link.get_r() if _hackIdx == 0 else link.get_r())
-    # print (" --->")
-    # print ("  * x = %s" % str(p))
-    # print ("  * v = %s" % str(link.vel))
-    # print ("")
 
 def _calculateConstraintForces(links, F_grav):
-    nDim, nLinks = 3, len(links)
-    szC = 2 * nDim * nLinks
-    sz = szC + nDim * nLinks
-    A, b = np.zeros((sz, sz)), np.zeros((sz))
+    """
+    Calculate constraint forces by building and solving the large linear
+    equations shown in class
+    """
     I3 = np.eye((3))
+
+    nDim, nLinks = 3, len(links)
+    szC = 2 * nDim * nLinks  # Size of the M/I section of the matrix
+    sz = szC + nDim * nLinks # Total matrix size
+
+    # Fill these in, so we can solve Ax = b
+    A, b = np.zeros((sz, sz)), np.zeros((sz))
 
     for i, link in enumerate(links):
         r_world = link.get_r()
@@ -77,13 +77,17 @@ def _calculateConstraintForces(links, F_grav):
         coriolis = np.cross(link.omega, I_world @ link.omega)
 
         p, q = 6*i, szC+3*i
+        # Mass and inertia for each link:
         A[p+0:p+3, p+0:p+3] = I3 * link.mass
         A[p+3:p+6, p+3:p+6] = I_world
+
+        # Constraints for its connection to its previous sibling
         A[q+0:q+3, p+0:p+3] = I3
         A[q+0:q+3, p+3:p+6] = -r_hat
         A[p+0:p+3, q+0:q+3] = I3
         A[p+3:p+6, q+0:q+3] = r_hat
         if i > 0:
+            # Effect it had on its previous sibling's latter constraint.
             lastLink = links[i - 1]
             last_r_hat = funkify(-lastLink.get_r())
             A[q+0:q+3, p-6:p-3] = -I3
@@ -101,9 +105,7 @@ def _calculateConstraintForces(links, F_grav):
 
     result = np.linalg.solve(A, b)
     forces = -np.expand_dims(result[szC:], axis=1)
-    return list(forces.reshape((-1, nDim))), A, b
-
-
+    return list(forces.reshape((-1, nDim)))
 
 ########################################################################################################################
 
@@ -421,8 +423,8 @@ class SingleLinkPendulumEnv(BaseEnv):
         psteps = 1
         for step in range(psteps):
             link = self.links[0]
-            _Fs, _A, _b = _calculateConstraintForces([link], F_grav)
-            Fconstraint_world = _Fs[0]
+            constraintForces = _calculateConstraintForces([link], F_grav)
+            Fconstraint_world = constraintForces[0]
 
             # Baumgarte stabilization:
             k_p, k_d = 0.5, 0.005
@@ -438,7 +440,7 @@ class SingleLinkPendulumEnv(BaseEnv):
             # Add gravity (applied at CoM, so no torque)
             F_world = Fconstraint_world + F_grav
 
-            _updateLinkFromForces(link, F_world, T_world, self.dT)
+            _updateLinkFromForces(link, F_world, T_world, self.dT, 0)
 
             self.sim_time += self.dT
 
@@ -465,41 +467,54 @@ class MultiLinkPendulumEnv(BaseEnv):
             for link in self.links:
                 link.vel = np.zeros(3)  # initial velocity
 
-        F_grav = np.array([0, self.GRAVITY * 0.2, 0])
+        F_grav = np.array([0, self.GRAVITY, 0])
         nLinks = len(self.links)
 
         psteps = 1
         for step in range(psteps):
-            _Fs, _A, _b = _calculateConstraintForces(self.links, F_grav)
+            z3 = np.zeros(3)
+            constraintForces = _calculateConstraintForces(self.links, F_grav)
+
+            # Force constraints from previous joint and next joint
+            prev_Fc, next_Fc = [], []
+            prev_dV, next_dV = [], []
+            prev_dP, next_dP = [], []
+            prevP, nextP = [], []
+            for i in range(nLinks):
+                # previous link, this link, next link:
+                pL = self.links[i-1] if i > 0 else None
+                tL = self.links[i]
+                nL = self.links[i+1] if i < (nLinks - 1) else None
+
+                # Start and end points of previous, this and next links:
+                pEnd = self.initialAnchor if i == 0 else pL.pos - pL.get_r()
+                tSta = tL.pos + tL.get_r()
+                tEnd = tL.pos - tL.get_r()
+                nSta = None if i == nLinks - 1 else nL.pos + nL.get_r()
+
+                # Constraint forces, dV and dP for previous & next constraints:
+                prev_Fc.append(constraintForces[i])
+                next_Fc.append(-constraintForces[i+1] if (i < nLinks - 1) else z3)
+                prev_dV.append(z3 if pL is None else tL.vel - pL.vel)
+                next_dV.append(z3 if nL is None else tL.vel - nL.vel)
+                prev_dP.append(pEnd - tSta)
+                next_dP.append(z3 if nSta is None else tEnd - nSta)
 
             for i in range(nLinks):
                 link = self.links[i]
 
-                Fconstraint_world = _Fs[i]
-                if i < nLinks - 1:
-                    Fconstraint_world -= _Fs[i+1]
+                k_d, k_p, k_t = 0.01, 0.3, 0.001
+                prev_baumF = baum(link.mass, prev_dV[i], prev_dP[i], k_d, k_p)
+                next_baumF = baum(link.mass, next_dV[i], next_dP[i], k_d, k_p)
 
-                # Baumgarte stabilization:
-                k_p, k_d = 1.0, 0.0001
-                if i == 0:
-                    pErr = (link.pos + link.get_r()) - self.initialAnchor
-                    # print ("%d > %f" % (i, np.linalg.norm(pErr)))
-                else:
-                    prevLink = self.links[i - 1]
-                    pErr = (link.pos + link.get_r()) - (prevLink.pos - prevLink.get_r())
-                    # print ("%d > %f" % (i, np.linalg.norm(pErr)))
-                    print ("ERR > %s" % (str(pErr)))
-                baumF_world = -k_p * pErr - k_d * (link.vel)
-                Fconstraint_world += baumF_world
+                pFc = prev_Fc[i] + prev_baumF
+                pTc = np.cross(link.get_r(), pFc)
+                nFc = next_Fc[i] + next_baumF
+                nTc = np.cross(-link.get_r(), nFc)
 
-                # Apply constraint force at constraint position, and damp
-                T_world = np.cross(link.get_r(), Fconstraint_world)
-                w_damp = 0 #0.00001
-                T_world += -w_damp * link.omega
-
-                # Add gravity (applied at CoM, so no torque)
-                F_world = Fconstraint_world + F_grav
-                #print ("%d > %s" % (i, str(F_world)))
+                T_damp = -k_t * link.omega
+                T_world = pTc + nTc + T_damp
+                F_world = pFc + nFc + F_grav
 
                 _updateLinkFromForces(link, F_world, T_world, self.dT, i)
 
