@@ -422,7 +422,7 @@ class SingleLinkPendulumEnv(BaseEnv):
             F_world = F_c + baumF_world + F_grav
 
             # debugging:
-            link.display_force = 20 * baumF_world
+            # link.display_force = 20 * baumF_world
             # link.display_force = 0.01 * F_c
 
             _updateLinkFromForceAndTorque(link, F_world, T_world, self.dT)
@@ -458,8 +458,7 @@ class MultiLinkPendulumEnv(BaseEnv):
 
             # Force constraints from previous joint and next joint
             prev_Fc, next_Fc = [], []
-            prev_dV, next_dV = [], []
-            prev_dP, next_dP = [], []
+            prev_dV, prev_dP = [], []
             prevP, nextP = [], []
 
             # Fill for each link:
@@ -478,15 +477,13 @@ class MultiLinkPendulumEnv(BaseEnv):
                 # Constraint forces, dV and dP for previous & next constraints:
                 prev_Fc.append(constraintForces[i])
                 next_Fc.append(-constraintForces[i+1] if (i < nLinks - 1) else z3)
-                prev_dV.append(tL.vel if pL is None else tL.vel - pL.vel)
-                next_dV.append(z3 if nL is None else tL.vel - nL.vel)
-                prev_dP.append(pEnd - tSta)
-                next_dP.append(z3 if nSta is None else tEnd - nSta)
+                prev_dV.append(-tL.vel if pL is None else pL.vel - tL.vel)
+                prev_dP.append(tSta - pEnd)
 
             # Now apply forces and torque to each link in isolation:
-            baum_total = z3
+            baum_total = z3 # Collect stabilization along the chain
             for i, link in enumerate(self.links):
-                k_d, k_p, k_t = 0.00001, 0.00001, 0.001
+                k_d, k_p, k_t = 0.0001, 0.0001, 0.001
 
                 # Stabilized force and torque from connection to previous link
                 prev_baumF = baum(link.mass, prev_dV[i], prev_dP[i], k_d, k_p)
