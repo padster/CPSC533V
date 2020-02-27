@@ -26,10 +26,10 @@ model = MyModel(4, 2)
 def train_behavioral_cloning():
     
     # Adam optimizer usually a good default. TODO: pick learning rate:
-    optimizer = torch.optim.Adam(model.parameters(), lr=0.0001)
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
     
     # Decision is binary 0 or 1, so cross entropy loss should work well:
-    loss_function = torch.nn.CrossEntropyLoss()
+    loss_function = torch.nn.CrossEntropyLoss().to(device)
 
     gradient_steps = 0
 

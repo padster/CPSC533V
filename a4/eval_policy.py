@@ -1,7 +1,8 @@
 import gym
 import torch
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+device = torch.device("cpu")
+#device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 def eval_policy(policy, env='CartPole-v0', num_test_episodes=10, render=False, verbose=False):
     test_env = gym.make(env)
@@ -10,8 +11,9 @@ def eval_policy(policy, env='CartPole-v0', num_test_episodes=10, render=False, v
         state = test_env.reset()
         episode_total_reward = 0
         while True:
-            state = torch.tensor([state], device=device, dtype=torch.float32)
-            action = policy.select_action(state).cpu().numpy()[0][0]
+            #state = torch.tensor([state], device=device, dtype=torch.float32)
+            state = torch.from_numpy(state)
+            action = policy.select_action(state).item() #.cpu().numpy()[0][0]
             next_state, reward, done, _ = test_env.step(action)
             
             if render:
