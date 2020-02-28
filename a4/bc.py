@@ -1,4 +1,5 @@
 import gym
+import os
 import torch
 from eval_policy import eval_policy, device
 from model import MyModel
@@ -15,7 +16,8 @@ TEST_INTERVAL = 2
 
 ENV_NAME = 'CartPole-v0'
 
-dataset = Dataset(data_path="{}_dataset.pkl".format(ENV_NAME))
+# Force in same directory from this file, regardless of where python is run
+dataset = Dataset(data_path=os.path.join(os.path.dirname(__file__), "{}_dataset.pkl".format(ENV_NAME)))
 dataloader = torch.utils.data.DataLoader(dataset, batch_size=BATCH_SIZE, num_workers=4)
 
 env = gym.make(ENV_NAME)
@@ -24,8 +26,7 @@ env = gym.make(ENV_NAME)
 model = MyModel(4, 2)
 
 def train_behavioral_cloning():
-    
-    # Adam optimizer usually a good default. TODO: pick learning rate:
+    # Adam optimizer usually a good default.
     optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
     
     # Decision is binary 0 or 1, so cross entropy loss should work well:
@@ -56,9 +57,12 @@ def train_behavioral_cloning():
             print('[Test on environment] [epoch {}/{}] [score {:.2f}]'
                 .format(epoch, TOTAL_EPOCHS, score))
 
+
+    # Force directory to be same as this file.
     model_name = "behavioral_cloning_{}.pt".format(ENV_NAME)
-    print('Saving model as {}'.format(model_name))
-    torch.save(model.state_dict(), model_name)
+    fullPath = os.path.join(os.path.dirname(__file__), model_name)
+    torch.save(model.state_dict(), fullPath)
+    print('Saving model to {}'.format(fullPath))
 
 
 if __name__ == "__main__":
