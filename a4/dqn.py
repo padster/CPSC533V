@@ -16,7 +16,7 @@ TARGET_UPDATE = 30
 NUM_EPISODES = 4000
 TEST_INTERVAL = 250
 PRINT_INTERVAL = 50
-LEARNING_RATE = 10e-4
+LEARNING_RATE = 1e-4
 RENDER_INTERVAL = 20
 ENV_NAME = 'CartPole-v0'
 
@@ -34,14 +34,18 @@ loss_function = torch.nn.MSELoss(reduction='sum')
 memory = ReplayBuffer()
 
 def choose_action(state, test_mode=False):
+    if random.random() < EPS_EXPLORATION:
+        return env.action_space.sample()
     return model.select_action(torch.from_numpy(state)).item()
 
-def optimize_model(state, action, next_state, reward, done, useMemory=True):
+def optimize_model(state, action, next_state, reward, done, useMemory=True, doubleQ=True):
+    nextStateQ = target if doubleQ else model
+
     # Given a tuple (s_t, a_t, s_{t+1}, r_t, done_t) update your model weights
     if not useMemory:
         y_j = reward
         if not done:
-            y_j += GAMMA * target(torch.from_numpy(next_state)).max()
+            y_j += GAMMA * nextStateQ(torch.from_numpy(next_state)).max()
 
         y_j_torch = torch.FloatTensor([y_j])
         y_pred = model(torch.from_numpy(state))[action]
@@ -55,7 +59,7 @@ def optimize_model(state, action, next_state, reward, done, useMemory=True):
         memory.push(state, action, next_state, reward, done)
         stateBatch, actionBatch, next_stateBatch, rewardBatch, doneBatch = memory.sample(BATCH_SIZE)
 
-        y_j_torch = rewardBatch + doneBatch * (GAMMA * target(next_stateBatch).max(1)[0])
+        y_j_torch = rewardBatch + (1 - doneBatch) * (GAMMA * nextStateQ(next_stateBatch).max(1)[0])
         y_pred = torch.squeeze(torch.gather(model(stateBatch), 1, actionBatch), dim=1)
 
         loss = loss_function(y_j_torch, y_pred)

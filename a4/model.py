@@ -31,8 +31,8 @@ class MyModel(nn.Module):
         return self.model(x.float())
 
     def select_action(self, state):
-        if self.epsGreedy is not None and random.random() < self.epsGreedy:
-            return torch.LongTensor([[self.randomActionFunc()]])
+        # if self.epsGreedy is not None and random.random() < self.epsGreedy:
+            # return torch.LongTensor([[self.randomActionFunc()]])
 
         self.eval()
         x = self.forward(state)
