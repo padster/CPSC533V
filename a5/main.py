@@ -20,7 +20,7 @@ from torch.utils.tensorboard import SummaryWriter
 #import PIL
 
 def main(args):
-    # create environment 
+    # create environment
     env = gym.make(args.env)
     env.seed(args.seed)
     obs_dim = env.observation_space.shape[0]
@@ -31,7 +31,7 @@ def main(args):
         discrete = False
         act_dim = env.action_space.shape[0]
 
-    # actor critic 
+    # actor critic
     ac = ActorCritic(obs_dim, act_dim, discrete).to(args.device)
     print('Number of parameters', count_vars(ac))
 
@@ -50,8 +50,10 @@ def main(args):
         # Policy loss
         if args.loss_mode == 'vpg':
             # TODO (Task 2): implement vanilla policy gradient loss
+            pass
         elif args.loss_mode == 'ppo':
             # TODO (Task 4): implement clipped PPO loss
+            pass
         else:
             raise Exception('Invalid loss_mode option', args.loss_mode)
 
@@ -125,7 +127,7 @@ def main(args):
                 #gif_frames.append(frame)
                 #gif_frames.append(PIL.Image.fromarray(frame).resize([64,64]))  # you can try this downsize version if you are resource constrained
                 time.sleep(0.01)
-            
+
             # Update obs (critical!)
             o = next_o
 
@@ -199,7 +201,7 @@ if __name__ == '__main__':
 
     parser.add_argument('--suffix', type=str, default='', help='Just for experiment logging (see utils)')
     parser.add_argument('--prefix', type=str, default='logs', help='Just for experiment logging (see utils)')
-    
+
     args = parser.parse_args()
 
     torch.manual_seed(args.seed)
