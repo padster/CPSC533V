@@ -19,6 +19,9 @@ from collections import defaultdict
 from torch.utils.tensorboard import SummaryWriter
 #import PIL
 
+# Loss function for value prediction
+V_LOSS_FUNC = torch.nn.MSELoss(reduction='mean')
+
 def main(args):
     # create environment
     env = gym.make(args.env)
@@ -49,8 +52,10 @@ def main(args):
 
         # Policy loss
         if args.loss_mode == 'vpg':
-            # TODO (Task 2): implement vanilla policy gradient loss
-            pass
+            # Vanilla policy gradient loss
+            # Just scale logp by the selected psi definition
+            loss_pi = -torch.sum(torch.mul(psi, logp))
+
         elif args.loss_mode == 'ppo':
             # TODO (Task 4): implement clipped PPO loss
             pass
@@ -68,7 +73,9 @@ def main(args):
     def compute_loss_v(batch):
         obs, ret = batch['obs'], batch['ret']
         v = ac.v(obs)
-        # TODO: (Task 2): compute value function loss
+
+        # Value function loss = squared distance between predicted and observed
+        loss_v = V_LOSS_FUNC(v.squeeze(), ret)
         return loss_v
 
     # Set up optimizers for policy and value function
