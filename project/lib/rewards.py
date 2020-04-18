@@ -7,16 +7,18 @@ import torch
 DEFAULT_COEF = {
     # S
     'nearBall'  : 3.0,
-    'nearGoal'  : 0.1,
+    'nearGoal'  : 0.3,
     'hasBoost'  : 0.1,
-    'behindBall': 0.5,
+    'behindBall': 0.2,
     # A
     'forwards'  : 0.6,
     'straight'  : 0.6,
     'saveBoost' : 0.1,
     # Combine
     'state'     : 0.1,
-    'action'    : 0.2
+    'action'    : 0.2,
+    # Constant to pad upwards if needed
+    'const'     : 0.0,
 }
 
 def _pos(s, key, typ='pos'):
@@ -38,7 +40,7 @@ def artificialReward(s, a, coefOverrides={}):
     nearBall = 3.0 - 2 * _dist3D(ballAt, meAt)
     nearGoal = (ballAt[1] + 1) / 2
     hasBoost = s['me_boost']
-    behindBall = ((ballAt[1] - meAt[1]) + 1) / 2
+    behindBall = 1 if ballAt[1] > meAt[1] else 0
     stateReward = \
               coef['nearBall'] * nearBall \
             + coef['nearGoal'] * nearGoal \
@@ -53,7 +55,7 @@ def artificialReward(s, a, coefOverrides={}):
             + coef['straight'] * stayStraight \
             + coef['saveBoost'] * noBoost
 
-    return coef['state'] * stateReward + coef['action'] * actionReward
+    return coef['state'] * stateReward + coef['action'] * actionReward + coef['const']
 
 # Continuous 3D action space, so we can't find the maximum easily.
 # Instead, sample over a small subset of actions

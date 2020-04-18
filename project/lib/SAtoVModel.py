@@ -1,6 +1,7 @@
 # Neural network model for function f : (SxA) -> V (scalar real number)
 #   Used for deep q network, estimates Q from the given state and action.
 
+import os
 import torch
 import torch.nn as nn
 
@@ -33,9 +34,8 @@ class SAtoV_Model(nn.Module):
         torch.save(self.state_dict(), path)
         print('Saved model!\n\t%s' % path)
 
-    def load(self, state=None, modelID=None):
+    def load(self, state=None, path=None):
         if state is None:
-            path = os.path.join("models", "%s.pt" % modelID)
             state = torch.load(path)
         self.load_state_dict(state)
         print('Loaded model!')

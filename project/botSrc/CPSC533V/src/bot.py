@@ -3,8 +3,11 @@
 
 # PARAMETERS
 USE_GPU = False
-BC_MODEL = "bc_boostOnly1v1_AI3.BN"
+BC_MODEL, DQN_Model = None, None
 DQN_MODEL = None # "dqn.2layer.BN.SandARewards"
+# BC_MODEL = "bc.all3Replays" # 3.3: BC trained
+# DQN_MODEL = "dqn.forwardPenalized" # 4.3: DQN validation
+DQN_MODEL = "dqn.all3Replays" # 4.4: DQN trained
 assert ((BC_MODEL is None) ^ (DQN_MODEL is None)), "Need either a BC or DQN model"
 
 import math
@@ -124,8 +127,7 @@ class MyBot(BaseAgent):
             (aThrottle, aSteer, aBoost) = aMax
 
         my_car = packet.game_cars[self.index]
-        #debugTxt(self.renderer, my_car, "(%.2f %.2f %.2f)" % (aThrottle, aSteer, float(aBoost)))
-        debugTxt(self.renderer, my_car, "(%.2f %.2f %.2f)" % (state_tensor[0][16], state_tensor[0][17], state_tensor[0][18]))
+        debugTxt(self.renderer, my_car, "(%.2f %.2f %.2f)" % (aThrottle, aSteer, float(aBoost)))
 
         # throttle, steer, boost
         self.controller_state.throttle = aThrottle

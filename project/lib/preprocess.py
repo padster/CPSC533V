@@ -162,7 +162,7 @@ def stateAndActionsForPlayer(game, playerIdx):
 ###
 # Converting states and actions into batches, for training
 ##
-def dataToBatches(states, actions, batchSz, splitActions=False, includeRewards=False, seed=1234):
+def dataToBatches(states, actions, batchSz, splitActions=False, includeRewards=False, seed=1234, coefOverrides={}):
     random.seed(seed)
     nRows = states.shape[0]
     stateSz = states.shape[1]
@@ -204,7 +204,7 @@ def dataToBatches(states, actions, batchSz, splitActions=False, includeRewards=F
             else:
                 a[j, :] = actions.iloc[t, :].values
                 if includeRewards:
-                    r[j] = libRewards.artificialReward(states.iloc[t, :], a[j, :])
+                    r[j] = libRewards.artificialReward(states.iloc[t, :], a[j, :], coefOverrides)
                     sPrime[j, :] = states.iloc[t+1, :].values
 
         if splitActions:
